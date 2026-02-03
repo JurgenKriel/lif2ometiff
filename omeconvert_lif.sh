@@ -25,9 +25,9 @@ echo "Conda environment activated: $CONDA_DEFAULT_ENV"
 echo "Looking for this mf file..."
 
 # Set the directory containing the .ome.tiff files
-INPUT_DIR="/stornext/Img/data/prkfs1/m/Microscopy/Jurgen_Kriel/Venture/PT6/"
-RAW_OUTPUT_DIR='/vast/scratch/users/kriel.j/venture_pt6/raw/'
-OMETIFF_OUTPUT_DIR='/vast/projects/BCRL_Multi_Omics/venture_pt6/ome/'
+INPUT_DIR="/path/to/input"
+RAW_OUTPUT_DIR='/path/to/raw_output'
+OMETIFF_OUTPUT_DIR='/path/to/ome/output'
 
 # Create the output directories if they don't exist
 mkdir -p "$RAW_OUTPUT_DIR"
