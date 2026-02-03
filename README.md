@@ -22,14 +22,14 @@ If you don't have Conda installed, we recommend [Miniforge](https://github.com/c
 Run the following command to create a new environment (e.g., `spatialdata_env`) with the necessary packages:
 
 ```bash
-mamba create -n spatialdata_env -c ome -c conda-forge bioformats2raw raw2ometiff openjdk
+mamba create -n conversion_env -c ome -c conda-forge bioformats2raw raw2ometiff openjdk
 ```
 
 *Note: `openjdk` is required for the LIF script to compile the Java helper tool.*
 
 ### 3. Activate the Environment
 ```bash
-conda activate spatialdata_env
+conda activate conversion_env
 ```
 
 ## Usage
