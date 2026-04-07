@@ -24,55 +24,53 @@ echo "Conda environment activated: $CONDA_DEFAULT_ENV"
 
 echo "Looking for this mf file..."
 
-# Set the directory containing the .ome.tiff files
-INPUT_DIR="/path/to/input"
-RAW_OUTPUT_DIR='/path/to/raw_output'
-OMETIFF_OUTPUT_DIR='/path/to/ome/output'
+# Set the directory containing the input files
+INPUT_DIR="/stornext/Img/data/prkfs1/m/Microscopy/Jurgen_Kriel/Venture/PT6/"
+RAW_OUTPUT_DIR='/vast/scratch/users/kriel.j/venture_pt6/raw/'
+OMETIFF_OUTPUT_DIR='/vast/projects/BCRL_Multi_Omics/venture_pt6'
 
 # Create the output directories if they don't exist
 mkdir -p "$RAW_OUTPUT_DIR"
 mkdir -p "$OMETIFF_OUTPUT_DIR"
 
 # Helper Tool Setup
-# Find Bio-Formats jars to compile the helper tool
 BIOFORMATS_HOME=$(find /vast/projects/BCRL_Multi_Omics/spatialdata_env_2/share -maxdepth 1 -name "bioformats2raw-*" -type d | head -n 1)
 CP="$BIOFORMATS_HOME/lib/*"
 JAVA_TOOL_SRC="$RAW_OUTPUT_DIR/GetLIFSeries.java"
 
-# Create Java helper to list series with names
+# Create Java helper using OME metadata store for accurate image names
 cat <<JEOF > "$JAVA_TOOL_SRC"
 import loci.formats.ImageReader;
 import loci.formats.IFormatReader;
+import loci.formats.MetadataTools;
+import loci.formats.meta.IMetadata;
 import loci.common.DebugTools;
-import java.util.Hashtable;
 
 public class GetLIFSeries {
     public static void main(String[] args) {
         try {
-            DebugTools.enableLogging("ERROR");
+            DebugTools.enableLogging("OFF");
             if (args.length < 1) return;
             String file = args[0];
+            IMetadata omeMeta = MetadataTools.createOMEXMLMetadata();
             IFormatReader reader = new ImageReader();
+            reader.setMetadataStore(omeMeta);
             reader.setId(file);
             int count = reader.getSeriesCount();
             for (int i = 0; i < count; i++) {
                 reader.setSeries(i);
                 int sx = reader.getSizeX();
                 int sy = reader.getSizeY();
-                
+                // Get the proper OME image name (not series metadata)
                 String name = "Series" + i;
-                Hashtable<String, Object> meta = reader.getSeriesMetadata();
-                if (meta.containsKey("Name")) {
-                    name = meta.get("Name").toString();
-                } else if (meta.containsKey("Image name")) {
-                    name = meta.get("Image name").toString();
-                } else if (meta.containsKey("TileScan Name")) {
-                     name = meta.get("TileScan Name").toString();
-                }
-                
-                // Sanitize name: replace non-alphanumeric (except . - _) with _
+                try {
+                    String omeName = omeMeta.getImageName(i);
+                    if (omeName != null && !omeName.trim().isEmpty()) {
+                        name = omeName.trim();
+                    }
+                } catch (Exception e) {}
+                // Sanitize: replace non-alphanumeric (except . - _) with _
                 String cleanName = name.replaceAll("[^a-zA-Z0-9._-]", "_");
-                
                 // Output: Index SizeX SizeY SanitizedName
                 System.out.println(i + " " + sx + " " + sy + " " + cleanName);
             }
@@ -90,49 +88,60 @@ javac -cp "$CP" -d "$RAW_OUTPUT_DIR" "$JAVA_TOOL_SRC"
 # Main processing loop
 echo "✅ Found it!"
 echo "Running conversion...this might take a while"
-for file in "$INPUT_DIR"/*20260122_venture6_40231.lif; do
+for file in "$INPUT_DIR"/*Venture6_tile_scan_20260407.lif; do
+    [ -e "$file" ] || continue
     base_name=$(basename "$file")
-    
+
     if [[ "$file" == *.lif ]]; then
-        echo "Detected LIF file $base_name"
-        echo "Identifying merged series..."
-        
-        # Get list of all series: Index SizeX SizeY Name
-        # Filter for series with width or height > 2000
-        SERIES_DATA=$(java -cp "$RAW_OUTPUT_DIR:$CP" GetLIFSeries "$file" | awk '$2 > 2000 || $3 > 2000')
-        
+        echo "Detected LIF file: $base_name"
+        echo "Identifying stitched series (looking for Merged images)..."
+
+        # Get all series: Index SizeX SizeY SanitizedOMEName
+        ALL_SERIES=$(java -cp "$RAW_OUTPUT_DIR:$CP" GetLIFSeries "$file" 2>/dev/null)
+
+        # Strategy 1: Filter for series with "Merged" in the OME image name
+        SERIES_DATA=$(echo "$ALL_SERIES" | grep -i "_Merged")
+
+        # Strategy 2: Fallback — largest images if no Merged series found
+        if [ -z "$SERIES_DATA" ]; then
+            echo "No 'Merged' series found, falling back to large series (>10000px)..."
+            SERIES_DATA=$(echo "$ALL_SERIES" | awk '$2 > 10000 || $3 > 10000')
+        fi
+
+        # Strategy 3: Final fallback — largest single image in the file
+        if [ -z "$SERIES_DATA" ]; then
+            echo "No large series found either, converting the single largest series..."
+            SERIES_DATA=$(echo "$ALL_SERIES" | awk 'BEGIN{max=0; line=""} {p=$2*$3; if(p>max){max=p; line=$0}} END{print line}')
+        fi
+
         if [ ! -z "$SERIES_DATA" ]; then
-            echo "Found large series, processing them individually..."
-            
-            # Read line by line
-            # Format: Index SizeX SizeY Name
+            echo "Found series to convert:"
+            echo "$SERIES_DATA"
+            echo "Processing each series individually..."
+
             echo "$SERIES_DATA" | while read -r idx sx sy name; do
                 echo "------------------------------------------------"
                 echo "Processing Series $idx ($name) - Size: ${sx}x${sy}"
-                
-                # Create a unique raw directory for this series
+
                 series_raw_path="$RAW_OUTPUT_DIR/${base_name}_s${idx}_raw"
-                output_ome_path="$OMETIFF_OUTPUT_DIR/${base_name%.*}_${name}.ome.tif"
-                
-                # Step 1: Run bioformats2raw for single series
+                # Always include series index in filename to avoid overwriting
+                output_ome_path="$OMETIFF_OUTPUT_DIR/${base_name%.*}_${name}_s${idx}.ome.tif"
+
                 echo "Running bioformats2raw..."
-                bioformats2raw --overwrite --series "$idx" "$file" "$series_raw_path"
-                
-                # Step 2: Run raw2ometiff
+                bioformats2raw --overwrite --log-level=OFF --series "$idx" "$file" "$series_raw_path"
+
                 echo "Running raw2ometiff -> $output_ome_path"
-                raw2ometiff "$series_raw_path" "$output_ome_path"
-                
-                # Cleanup raw directory to save space
+                raw2ometiff --debug=OFF "$series_raw_path" "$output_ome_path"
+
                 echo "Cleaning up temp raw files..."
                 rm -rf "$series_raw_path"
-                echo "Done with Series $idx"
+                echo "✅ Done with Series $idx ($name)"
             done
-            
         else
-            echo "No large series found. Converting entire file as one..."
+            echo "Could not identify any series — converting entire file as one."
             raw_output_path="$RAW_OUTPUT_DIR/${base_name}_raw"
-            bioformats2raw --overwrite "$file" "$raw_output_path"
-            raw2ometiff "$raw_output_path" "$OMETIFF_OUTPUT_DIR/$base_name.ome.tif"
+            bioformats2raw --overwrite --log-level=OFF "$file" "$raw_output_path"
+            raw2ometiff --debug=OFF "$raw_output_path" "$OMETIFF_OUTPUT_DIR/${base_name}.ome.tif"
         fi
     fi
 done
