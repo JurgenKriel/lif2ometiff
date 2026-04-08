@@ -25,7 +25,7 @@ echo "Conda environment activated: $CONDA_DEFAULT_ENV"
 echo "Looking for this mf file..."
 
 # Set the directory containing the input files
-INPUT_DIR="/stornext/Img/data/prkfs1/m/Microscopy/Jurgen_Kriel/Venture/PT6/"
+INPUT_DIR="/stornext/Img/data/prkfs1/m/Microscopy/Jurgen_Kriel/"
 RAW_OUTPUT_DIR='/vast/scratch/users/kriel.j/venture_pt6/raw/'
 OMETIFF_OUTPUT_DIR='/vast/projects/BCRL_Multi_Omics/venture_pt6'
 
@@ -54,14 +54,20 @@ public class GetLIFSeries {
             String file = args[0];
             IMetadata omeMeta = MetadataTools.createOMEXMLMetadata();
             IFormatReader reader = new ImageReader();
+            
+            // CRITICAL FIX: Align series indexing with bioformats2raw by disabling flattened resolutions
+            reader.setFlattenedResolutions(false);
+            
             reader.setMetadataStore(omeMeta);
             reader.setId(file);
             int count = reader.getSeriesCount();
+            
             for (int i = 0; i < count; i++) {
                 reader.setSeries(i);
                 int sx = reader.getSizeX();
                 int sy = reader.getSizeY();
                 int sz = reader.getSizeZ();
+                
                 // Get the proper OME image name
                 String name = "Series" + i;
                 try {
@@ -70,8 +76,10 @@ public class GetLIFSeries {
                         name = omeName.trim();
                     }
                 } catch (Exception e) {}
+                
                 // Sanitize: replace non-alphanumeric (except . - _) with _
                 String cleanName = name.replaceAll("[^a-zA-Z0-9._-]", "_");
+                
                 // Output: Index SizeX SizeY SizeZ SanitizedName
                 System.out.println(i + " " + sx + " " + sy + " " + sz + " " + cleanName);
             }
@@ -104,8 +112,8 @@ for file in "$INPUT_DIR"/*Venture6_tile_scan_20260407.lif; do
         echo "$ALL_SERIES"
         echo "---"
 
-        # Filter 1: Stitched tile scans — "Merged" in the OME image name
-        MERGED_SERIES=$(echo "$ALL_SERIES" | grep -i "_Merged")
+        # Filter 1: Stitched tile scans — "Merged" in the OME image name AND reasonably large (>1000px)
+        MERGED_SERIES=$(echo "$ALL_SERIES" | grep -i "_Merged" | awk '$2 > 1000 || $3 > 1000')
 
         # Filter 2: Z-stacks — SizeZ > 1, but NOT sub-tiles of a tile scan
         # (tile positions typically have "TileScan", "Position", or "Tile_" in their name)
@@ -131,7 +139,8 @@ for file in "$INPUT_DIR"/*Venture6_tile_scan_20260407.lif; do
             echo "$SERIES_DATA"
             echo "Processing each series individually..."
 
-            echo "$SERIES_DATA" | while read -r idx sx sy sz name; do
+            # Use while read and ignore empty lines properly
+            echo "$SERIES_DATA" | grep -v '^[[:space:]]*$' | while read -r idx sx sy sz name; do
                 echo "------------------------------------------------"
                 echo "Processing Series $idx ($name) - Size: ${sx}x${sy}, Z: ${sz}"
 
@@ -140,7 +149,7 @@ for file in "$INPUT_DIR"/*Venture6_tile_scan_20260407.lif; do
                 output_ome_path="$OMETIFF_OUTPUT_DIR/${base_name%.*}_${name}_s${idx}.ome.tif"
 
                 echo "Running bioformats2raw..."
-                bioformats2raw --overwrite --log-level=OFF --series "$idx" "$file" "$series_raw_path"
+                bioformats2raw --overwrite --log-level=WARN --series "$idx" "$file" "$series_raw_path"
 
                 echo "Running raw2ometiff -> $output_ome_path"
                 raw2ometiff --debug=OFF "$series_raw_path" "$output_ome_path"
